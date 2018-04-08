@@ -2,6 +2,8 @@ import socket
 import struct
 import threading
 import queue
+import time
+
 from Crypto.PublicKey import RSA
 from Crypto.Signature import PKCS1_v1_5
 from Crypto.Hash import SHA256
@@ -90,15 +92,27 @@ class SocketClientThread(threading.Thread):
         self.socket = None
 
     def connect(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((HOSTNAME, PORT))
-        timeval = struct.pack('ll', 0, 100000)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, timeval)
-        self.senderThread.socket = self.socket
+        connected = False
+        while connected is False and self.alive.isSet():
+            try:
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.socket.connect((HOSTNAME, PORT))
+                timeval = struct.pack('ll', 0, 100000) #µs
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, timeval)
+                self.senderThread.socket = self.socket
+                connected = True
+            except Exception as e:
+                print("Exception occured while (re) connecting, sleeping for a bit…")
+                print(e)
+                time.sleep(1)
+
+    def disconnect(self):
+        self.socket.close()
 
     def readline(self):
         recv_buf = StringIO(2048)
         while self.alive.isSet():
+            self.socket.settimeout(0.1)
             data = self.socket.recv()  # Pull what it can
             recv_buf.write(data)  # Append that segment to the buffer
             if '\n' in data:
@@ -120,15 +134,23 @@ class SocketClientThread(threading.Thread):
                         try:
                             data = verifyAndDecode(received)
                             pass
-                        finally:
-                            pass
+                        except Exception:
+                            print("Verifiyong data received over TCP failed!")
+                    if self.senderThread.isAlive() is False and self.alive.isSet():
+                        self.senderThread.join()
+                        self.disconnect()
+                        self.connect()
+
+                        self.senderThread = SenderThread(self.send_queue)
+                        self.senderThread.socket = self.socket
+                        self.senderThread.start()
             except Exception as e:
                 raise e
 
     def join(self, timeout=None):
         print("TCP receiver exiting…")
+        self.alive.clear()
         if(self.senderThread.is_alive()):
             self.senderThread.join(timeout)
-        self.alive.clear()
         self.socket.close()
         threading.Thread.join(self, timeout)
