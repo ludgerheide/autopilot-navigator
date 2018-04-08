@@ -13,7 +13,8 @@ from Subprograms import SerialConnector, VideoRecorder
 from navigation.NavigationThread import NavigationThread
 from navigation.Navigators import SimpleRouteFollowingNavigator
 
-SIMULATED = True
+TCP_UPDATE_INTERVAL = 2
+SIMULATED = False
 
 def quit_handler(_, __):
     '''
@@ -64,7 +65,10 @@ def reload_handler(_, __):
 def init_queue() -> MessageQueue:
     RECV_QUEUE_NAME = "/navQueue-fromFlightController"
 
-    recv_queue = MessageQueue(RECV_QUEUE_NAME, write=False, read=True)
+    try:
+        recv_queue = MessageQueue(RECV_QUEUE_NAME, write=False, read=True)
+    except posix_ipc.ExistentialError:
+        recv_queue = MessageQueue(RECV_QUEUE_NAME, posix_ipc.O_CREAT, write=False, read=True)
 
     return recv_queue
 
@@ -72,6 +76,7 @@ if __name__ == "__main__":
     #Set up the signal handlers, queues, threads and subprocesses
     signal.signal(signal.SIGINT, quit_handler)
     signal.signal(signal.SIGTERM, quit_handler)
+    signal.signal(signal.SIGHUP, reload_handler)
 
     recv_q = init_queue()
 
@@ -82,11 +87,15 @@ if __name__ == "__main__":
         serial_connector = SimulatedSerialConnector()
         navigator = SimpleRouteFollowingNavigator("Untitled.gpx")
     else:
-        video_recorder = VideoRecorder
-        serial_connector = SerialConnector()
+        #serial_connector = SerialConnector()
+        time.sleep(1)
+        video_recorder = VideoRecorder()
+        navigator = SimpleRouteFollowingNavigator("Untitled.gpx")
 
     navigation_thread = NavigationThread(navigator)
     navigation_thread.start()
+
+    last_tcp_update = time.time()
 
     while True:
         try:
@@ -102,5 +111,7 @@ if __name__ == "__main__":
             print("Receiving/decoding failed with {}".format(str(e)))
             msg = None
         if(msg is not None):
-            tcp_connector.send_queue.put(msg.encode())
+            if (time.time() - last_tcp_update > TCP_UPDATE_INTERVAL):
+                last_tcp_update = time.time()
+                tcp_connector.send_queue.put(msg.encode())
             navigator.update_from_flight_controller(msg)
